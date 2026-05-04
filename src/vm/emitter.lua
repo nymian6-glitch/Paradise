@@ -105,6 +105,19 @@ function Emitter:serializeChunk(chunk)
         for _, sub in ipairs(proto.prototypes) do
             serializeProto(sub)
         end
+
+        -- Upvalue definitions
+        local upvals = proto.upvalues or {}
+        writeInt32(#upvals)
+        for _, uv in ipairs(upvals) do
+            if uv.inParent then
+                writeByte(1)
+                writeInt16(uv.reg)
+            else
+                writeByte(0)
+                writeInt16(uv.idx or uv.reg or 0)
+            end
+        end
     end
 
     serializeProto(chunk)
@@ -174,9 +187,11 @@ function Emitter:getHandler(op, regOrder)
         [Op.LOADK]    = "Stk[" .. ra .. "]=Consts[" .. rb .. "+1]",
         [Op.LOADBOOL] = "Stk[" .. ra .. "]=(" .. rb .. "~=0);if " .. rc .. "~=0 then IP=IP+1 end",
         [Op.LOADNIL]  = "Stk[" .. ra .. "]=nil",
+        [Op.GETUPVAL] = "Stk[" .. ra .. "]=Upvals[" .. rb .. "]()",
         [Op.GETGLOBAL]= "Stk[" .. ra .. "]=Env[Consts[" .. rb .. "+1]]",
         [Op.GETTABLE] = "local idx=" .. rc .. ";if idx>255 then Stk[" .. ra .. "]=Stk[" .. rb .. "][Consts[idx-255]] else Stk[" .. ra .. "]=Stk[" .. rb .. "][Stk[idx]] end",
         [Op.SETGLOBAL]= "Env[Consts[" .. rb .. "+1]]=Stk[" .. ra .. "]",
+        [Op.SETUPVAL] = "Upvals[-(" .. rb .. "+1)](Stk[" .. ra .. "])",
         [Op.SETTABLE] = "local idx=" .. rb .. ";local val=Stk[" .. rc .. "];if idx>255 then Stk[" .. ra .. "][Consts[idx-255]]=val else Stk[" .. ra .. "][Stk[idx]]=val end",
         [Op.NEWTABLE] = "Stk[" .. ra .. "]={}",
         [Op.SELF]     = "local A=" .. ra .. ";Stk[A+1]=Stk[" .. rb .. "];local idx=" .. rc .. ";if idx>255 then Stk[A]=Stk[" .. rb .. "][Consts[idx-255]] else Stk[A]=Stk[" .. rb .. "][Stk[idx]] end",
@@ -201,9 +216,9 @@ function Emitter:getHandler(op, regOrder)
         [Op.RETURN]   = "local A=" .. ra .. ";local B=" .. rb .. ";if B==1 then return elseif B==0 then return unpack(Stk,A,Top) else return unpack(Stk,A,A+B-2) end",
         [Op.FORLOOP]  = "local A=" .. ra .. ";Stk[A]=Stk[A]+Stk[A+2];if Stk[A+2]>0 then if Stk[A]<=Stk[A+1] then IP=IP+" .. rb .. ";Stk[A+3]=Stk[A] end else if Stk[A]>=Stk[A+1] then IP=IP+" .. rb .. ";Stk[A+3]=Stk[A] end end",
         [Op.FORPREP]  = "local A=" .. ra .. ";Stk[A]=Stk[A]-Stk[A+2];IP=IP+" .. rb,
-        [Op.TFORLOOP] = "local A=" .. ra .. ";local C=" .. rc .. ";local rets={Stk[A](Stk[A+1],Stk[A+2])};for i=1,C do Stk[A+2+i]=rets[i] end;if Stk[A+3]~=nil then Stk[A+2]=Stk[A+3] else IP=IP+1 end",
+        [Op.TFORLOOP] = "local A=" .. ra .. ";local C=" .. rc .. ";local rets={Stk[A](Stk[A+1],Stk[A+2])};for i=1,C do Stk[A+2+i]=rets[i] end;if Stk[A+3]~=nil then Stk[A+2]=Stk[A+3];IP=IP+1 end",
         [Op.SETLIST]  = "local A=" .. ra .. ";local B=" .. rb .. ";local C=" .. rc .. ";local offset=(C-1)*50;for i=1,B do Stk[A][offset+i]=Stk[A+i] end",
-        [Op.CLOSURE]  = "local proto=Protos[" .. rb .. "+1];Stk[" .. ra .. "]=Wrap(proto,Env)",
+        [Op.CLOSURE]  = "local proto=Protos[" .. rb .. "+1];Stk[" .. ra .. "]=Wrap(proto,Env,Stk,Upvals)",
         [Op.VARARG]   = "local A=" .. ra .. ";local B=" .. rb .. ";if B==0 then for i=0,#Vararg do Stk[A+i]=Vararg[i] end;Top=A+#Vararg else for i=1,B-1 do Stk[A+i-1]=Vararg[i-1] end end",
         [Op.FLOORDIV] = "Stk[" .. ra .. "]=math.floor(Stk[" .. rb .. "]/Stk[" .. rc .. "])",
     }
@@ -283,13 +298,17 @@ local InstrCount=gBits32()
 for i=1,InstrCount do local Op=gBits16() local A=gBits16() local B=gBits32() if B>=2147483648 then B=B-4294967296 end local C=gBits16() Instrs[i]={Op,A,B,C} end
 local ProtoCount=gBits32()
 for i=1,ProtoCount do Protos[i]=Deserialize() end
-return {Instrs,Protos,Params,Consts} end]]
+local UpCount=gBits32() local UpDefs=nil
+if UpCount>0 then UpDefs={} for i=1,UpCount do local t=gBits8() local r=gBits16() UpDefs[i]={t,r} end end
+return {Instrs,Protos,Params,Consts,UpDefs} end]]
 
     -- VM Wrap function
     local dispatch = self:generateDispatch(handlers)
 
-    parts[#parts + 1] = [[local function Wrap(Chunk,Env)
-local Instr=Chunk[1] local Proto=Chunk[2] local Params=Chunk[3] local Consts=Chunk[4]
+    parts[#parts + 1] = [=[local function Wrap(Chunk,Env,PStk,PUpvals)
+local Instr=Chunk[1] local Proto=Chunk[2] local Params=Chunk[3] local Consts=Chunk[4] local UpDefs=Chunk[5]
+local Upvals={}
+if UpDefs then for i=1,#UpDefs do local d=UpDefs[i] if d[1]==1 then Upvals[i-1]=function() return PStk[d[2]] end Upvals[-i]=function(v) PStk[d[2]]=v end else Upvals[i-1]=function() return PUpvals[d[2]] end Upvals[-i]=function(v) PUpvals[d[2]]=v end end end end
 return function(...)
 local Stk={} local Top=-1 local Vararg={} local Args={...}
 local PCount=Select('#',...)-1
@@ -297,10 +316,10 @@ for i=0,PCount do if i>=Params then Vararg[i-Params]=Args[i+1] else Stk[i]=Args[
 local IP=1 local Protos=Proto
 while true do
 local Inst=Instr[IP] local Enum=Inst[1]
-]] .. dispatch .. [[
+]=] .. dispatch .. [=[
 
 IP=IP+1
-end end end]]
+end end end]=]
 
     parts[#parts + 1] = "return Wrap(Deserialize(),GetFEnv())(...)"
 

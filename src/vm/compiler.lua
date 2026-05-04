@@ -82,6 +82,43 @@ function Compiler:resolveLocal(id)
     return self.locals[id]
 end
 
+function Compiler:resolveUpvalue(id)
+    if not self.parentLocals then return nil end
+    -- Check direct parent locals
+    local parentReg = self.parentLocals[id]
+    if parentReg then
+        if not self.upvalues[id] then
+            local idx = #self.upvalueList
+            self.upvalueList[idx + 1] = { inParent = true, reg = parentReg }
+            self.upvalues[id] = idx
+        end
+        return self.upvalues[id]
+    end
+    -- Check grandparent (parent's upvalues)
+    if self.parentUpvalues and self.parentUpvalues[id] ~= nil then
+        local parentUpIdx = self.parentUpvalues[id]
+        if not self.upvalues[id] then
+            local idx = #self.upvalueList
+            self.upvalueList[idx + 1] = { inParent = false, idx = parentUpIdx }
+            self.upvalues[id] = idx
+        end
+        return self.upvalues[id]
+    end
+    -- Check grandparent locals
+    if self.parentParentLocals then
+        local gpReg = self.parentParentLocals[id]
+        if gpReg then
+            if not self.upvalues[id] then
+                local idx = #self.upvalueList
+                self.upvalueList[idx + 1] = { inParent = false, reg = gpReg }
+                self.upvalues[id] = idx
+            end
+            return self.upvalues[id]
+        end
+    end
+    return nil
+end
+
 function Compiler:compileChunk(ast)
     self.instructions = {}
     self.constants = {}
@@ -166,8 +203,13 @@ function Compiler:compileExpression(node, dest)
                 self:emit(Op.MOVE, dest, reg)
             end
         else
-            local k = self:addConstant(node.id.name or "_")
-            self:emit(Op.GETGLOBAL, dest, k)
+            local upIdx = self:resolveUpvalue(node.id)
+            if upIdx then
+                self:emit(Op.GETUPVAL, dest, upIdx)
+            else
+                local k = self:addConstant(node.id.name or "_")
+                self:emit(Op.GETGLOBAL, dest, k)
+            end
         end
     elseif kind == AstKind.FunctionCallExpression then
         self:compileFunctionCall(node, dest)
@@ -222,11 +264,19 @@ function Compiler:compileAssignment(stmt)
             if reg then
                 self:compileExpression(rhs, reg)
             else
-                local tempReg = self:allocRegister()
-                self:compileExpression(rhs, tempReg)
-                local k = self:addConstant(lhs.id.name or "_")
-                self:emit(Op.SETGLOBAL, tempReg, k)
-                self:freeRegister()
+                local upIdx = self:resolveUpvalue(lhs.id)
+                if upIdx then
+                    local tempReg = self:allocRegister()
+                    self:compileExpression(rhs, tempReg)
+                    self:emit(Op.SETUPVAL, tempReg, upIdx)
+                    self:freeRegister()
+                else
+                    local tempReg = self:allocRegister()
+                    self:compileExpression(rhs, tempReg)
+                    local k = self:addConstant(lhs.id.name or "_")
+                    self:emit(Op.SETGLOBAL, tempReg, k)
+                    self:freeRegister()
+                end
             end
         elseif lhs.kind == AstKind.AssignmentIndexing then
             local baseReg = self:allocRegister()
@@ -422,16 +472,31 @@ end
 
 function Compiler:compileForIn(stmt)
     local baseReg = self:allocRegister()
-    for i, iter in ipairs(stmt.iterators) do
-        if i == 1 then
-            self:compileExpression(iter, baseReg)
-        else
-            local reg = self:allocRegister()
-            self:compileExpression(iter, reg)
+    local numIters = #stmt.iterators
+    if numIters == 1 and (stmt.iterators[1].kind == AstKind.FunctionCallExpression or stmt.iterators[1].kind == AstKind.PassSelfFunctionCallExpression) then
+        -- Single function call iterator: compile to fill 3 registers (iter, state, control)
+        local node = stmt.iterators[1]
+        self:compileExpression(node.base, baseReg)
+        for _, arg in ipairs(node.args) do
+            local argReg = self:allocRegister()
+            self:compileExpression(arg, argReg)
         end
-    end
-    while self.registers < baseReg + 3 do
-        self:allocRegister()
+        local nargs = #node.args + 1
+        self:emit(Op.CALL, baseReg, nargs, 4) -- 4 = 3 results
+        self:freeRegisters(#node.args)
+        while self.registers < baseReg + 3 do self:allocRegister() end
+    else
+        for i, iter in ipairs(stmt.iterators) do
+            if i == 1 then
+                self:compileExpression(iter, baseReg)
+            else
+                local reg = self:allocRegister()
+                self:compileExpression(iter, reg)
+            end
+        end
+        while self.registers < baseReg + 3 do
+            self:allocRegister()
+        end
     end
 
     for _, id in ipairs(stmt.ids) do
@@ -441,7 +506,7 @@ function Compiler:compileForIn(stmt)
     local loopStart = self:currentPos()
     table.insert(self.loopStack, { breakJumps = {}, continueJumps = {}, start = loopStart })
 
-    local tfJump = self:emit(Op.TFORLOOP, baseReg, #stmt.ids)
+    local tfJump = self:emit(Op.TFORLOOP, baseReg, 0, #stmt.ids)
     local jmpOut = self:emit(Op.JMP, 0, 0)
 
     self:compileBlock(stmt.body)
@@ -586,6 +651,11 @@ function Compiler:compileFunctionLiteral(node, dest)
     subCompiler.maxRegisters = 0
     subCompiler.locals = {}
     subCompiler.loopStack = {}
+    subCompiler.parentLocals = self.locals
+    subCompiler.parentUpvalues = self.upvalues or {}
+    subCompiler.parentParentLocals = self.parentLocals
+    subCompiler.upvalues = {}
+    subCompiler.upvalueList = {}
 
     -- Declare params AFTER init so they aren't cleared
     for _, arg in ipairs(node.args) do
@@ -602,6 +672,7 @@ function Compiler:compileFunctionLiteral(node, dest)
         constants = subCompiler.constants,
         prototypes = subCompiler.prototypes,
         numParams = #node.args,
+        upvalues = subCompiler.upvalueList,
     }
 
     local protoIdx = #self.prototypes
