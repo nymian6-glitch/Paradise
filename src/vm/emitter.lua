@@ -173,13 +173,13 @@ end
 -- Get handler code for a specific opcode
 function Emitter:getHandler(op, regOrder)
     regOrder = regOrder or {0, 1, 2}
-    local ra = ({"Inst[2]", "Inst[3]", "Inst[4]"})[regOrder[1] + 1]
-    local rb = ({"Inst[2]", "Inst[3]", "Inst[4]"})[regOrder[2] + 1]
-    local rc = ({"Inst[2]", "Inst[3]", "Inst[4]"})[regOrder[3] + 1]
+    local ra = ({"A", "B", "C"})[regOrder[1] + 1]
+    local rb = ({"A", "B", "C"})[regOrder[2] + 1]
+    local rc = ({"A", "B", "C"})[regOrder[3] + 1]
 
     -- For default ordering, use standard names
     if regOrder[1] == 0 and regOrder[2] == 1 and regOrder[3] == 2 then
-        ra, rb, rc = "Inst[2]", "Inst[3]", "Inst[4]"
+        ra, rb, rc = "A", "B", "C"
     end
 
     local templates = {
@@ -189,12 +189,12 @@ function Emitter:getHandler(op, regOrder)
         [Op.LOADNIL]  = "Stk[" .. ra .. "]=nil",
         [Op.GETUPVAL] = "Stk[" .. ra .. "]=Upvals[" .. rb .. "]()",
         [Op.GETGLOBAL]= "Stk[" .. ra .. "]=Env[Consts[" .. rb .. "+1]]",
-        [Op.GETTABLE] = "local idx=" .. rc .. ";if idx>255 then Stk[" .. ra .. "]=Stk[" .. rb .. "][Consts[idx-255]] else Stk[" .. ra .. "]=Stk[" .. rb .. "][Stk[idx]] end",
+        [Op.GETTABLE] = "if " .. rc .. ">255 then Stk[" .. ra .. "]=Stk[" .. rb .. "][Consts[" .. rc .. "-255]] else Stk[" .. ra .. "]=Stk[" .. rb .. "][Stk[" .. rc .. "]] end",
         [Op.SETGLOBAL]= "Env[Consts[" .. rb .. "+1]]=Stk[" .. ra .. "]",
         [Op.SETUPVAL] = "Upvals[-(" .. rb .. "+1)](Stk[" .. ra .. "])",
-        [Op.SETTABLE] = "local idx=" .. rb .. ";local val=Stk[" .. rc .. "];if idx>255 then Stk[" .. ra .. "][Consts[idx-255]]=val else Stk[" .. ra .. "][Stk[idx]]=val end",
+        [Op.SETTABLE] = "local key=" .. rb .. ">255 and Consts[" .. rb .. "-255] or Stk[" .. rb .. "];local val=" .. rc .. ">255 and Consts[" .. rc .. "-255] or Stk[" .. rc .. "];Stk[" .. ra .. "][key]=val",
         [Op.NEWTABLE] = "Stk[" .. ra .. "]={}",
-        [Op.SELF]     = "local A=" .. ra .. ";Stk[A+1]=Stk[" .. rb .. "];local idx=" .. rc .. ";if idx>255 then Stk[A]=Stk[" .. rb .. "][Consts[idx-255]] else Stk[A]=Stk[" .. rb .. "][Stk[idx]] end",
+        [Op.SELF]     = "Stk[" .. ra .. "+1]=Stk[" .. rb .. "];if " .. rc .. ">255 then Stk[" .. ra .. "]=Stk[" .. rb .. "][Consts[" .. rc .. "-255]] else Stk[" .. ra .. "]=Stk[" .. rb .. "][Stk[" .. rc .. "]] end",
         [Op.ADD]      = "Stk[" .. ra .. "]=Stk[" .. rb .. "]+Stk[" .. rc .. "]",
         [Op.SUB]      = "Stk[" .. ra .. "]=Stk[" .. rb .. "]-Stk[" .. rc .. "]",
         [Op.MUL]      = "Stk[" .. ra .. "]=Stk[" .. rb .. "]*Stk[" .. rc .. "]",
@@ -204,29 +204,29 @@ function Emitter:getHandler(op, regOrder)
         [Op.UNM]      = "Stk[" .. ra .. "]=-Stk[" .. rb .. "]",
         [Op.NOT]      = "Stk[" .. ra .. "]=not Stk[" .. rb .. "]",
         [Op.LEN]      = "Stk[" .. ra .. "]=#Stk[" .. rb .. "]",
-        [Op.CONCAT]   = "local r=\"\";for i=" .. rb .. "," .. rc .. " do r=r..Stk[i] end;Stk[" .. ra .. "]=r",
+        [Op.CONCAT]   = "local r='';for i=" .. rb .. "," .. rc .. " do r=r..Stk[i] end;Stk[" .. ra .. "]=r",
         [Op.JMP]      = "IP=IP+" .. rb,
-        [Op.EQ]       = "if (Stk[" .. rb .. "]==Stk[" .. rc .. "])~=(" .. ra .. "~=0) then IP=IP+1 end",
-        [Op.LT]       = "if (Stk[" .. rb .. "]<Stk[" .. rc .. "])~=(" .. ra .. "~=0) then IP=IP+1 end",
-        [Op.LE]       = "if (Stk[" .. rb .. "]<=Stk[" .. rc .. "])~=(" .. ra .. "~=0) then IP=IP+1 end",
+        [Op.EQ]       = "local vb=" .. rb .. ">255 and Consts[" .. rb .. "-255] or Stk[" .. rb .. "];local vc=" .. rc .. ">255 and Consts[" .. rc .. "-255] or Stk[" .. rc .. "];if (vb==vc)~=(" .. ra .. "~=0) then IP=IP+1 end",
+        [Op.LT]       = "local vb=" .. rb .. ">255 and Consts[" .. rb .. "-255] or Stk[" .. rb .. "];local vc=" .. rc .. ">255 and Consts[" .. rc .. "-255] or Stk[" .. rc .. "];if (vb<vc)~=(" .. ra .. "~=0) then IP=IP+1 end",
+        [Op.LE]       = "local vb=" .. rb .. ">255 and Consts[" .. rb .. "-255] or Stk[" .. rb .. "];local vc=" .. rc .. ">255 and Consts[" .. rc .. "-255] or Stk[" .. rc .. "];if (vb<=vc)~=(" .. ra .. "~=0) then IP=IP+1 end",
         [Op.TEST]     = "if (not Stk[" .. ra .. "])==(" .. rc .. "~=0) then IP=IP+1 end",
         [Op.TESTSET]  = "if (not Stk[" .. rb .. "])==(" .. rc .. "~=0) then IP=IP+1 else Stk[" .. ra .. "]=Stk[" .. rb .. "] end",
-        [Op.CALL]     = "local A=" .. ra .. ";local B=" .. rb .. ";local C=" .. rc .. ";local n=0;if B>1 then n=B-1 elseif B==0 then n=Top-A end;local rets={Stk[A](unpack(Stk,A+1,A+n))};if C>1 then for i=1,C-1 do Stk[A+i-1]=rets[i] end elseif C==0 then for i=1,#rets do Stk[A+i-1]=rets[i] end;Top=A+#rets-1 end",
-        [Op.TAILCALL] = "local A=" .. ra .. ";local B=" .. rb .. ";local n=0;if B>1 then n=B-1 else n=Top-A end;return Stk[A](unpack(Stk,A+1,A+n))",
-        [Op.RETURN]   = "local A=" .. ra .. ";local B=" .. rb .. ";if B==1 then return elseif B==0 then return unpack(Stk,A,Top) else return unpack(Stk,A,A+B-2) end",
-        [Op.FORLOOP]  = "local A=" .. ra .. ";Stk[A]=Stk[A]+Stk[A+2];if Stk[A+2]>0 then if Stk[A]<=Stk[A+1] then IP=IP+" .. rb .. ";Stk[A+3]=Stk[A] end else if Stk[A]>=Stk[A+1] then IP=IP+" .. rb .. ";Stk[A+3]=Stk[A] end end",
-        [Op.FORPREP]  = "local A=" .. ra .. ";Stk[A]=Stk[A]-Stk[A+2];IP=IP+" .. rb,
-        [Op.TFORLOOP] = "local A=" .. ra .. ";local C=" .. rc .. ";local rets={Stk[A](Stk[A+1],Stk[A+2])};for i=1,C do Stk[A+2+i]=rets[i] end;if Stk[A+3]~=nil then Stk[A+2]=Stk[A+3];IP=IP+1 end",
-        [Op.SETLIST]  = "local A=" .. ra .. ";local B=" .. rb .. ";local C=" .. rc .. ";local offset=(C-1)*50;for i=1,B do Stk[A][offset+i]=Stk[A+i] end",
-        [Op.CLOSURE]  = "local proto=Protos[" .. rb .. "+1];Stk[" .. ra .. "]=Wrap(proto,Env,Stk,Upvals)",
-        [Op.VARARG]   = "local A=" .. ra .. ";local B=" .. rb .. ";if B==0 then for i=0,#Vararg do Stk[A+i]=Vararg[i] end;Top=A+#Vararg else for i=1,B-1 do Stk[A+i-1]=Vararg[i-1] end end",
+        [Op.CALL]     = "local n=0;if " .. rb .. ">1 then n=" .. rb .. "-1 elseif " .. rb .. "==0 then n=Top-" .. ra .. " end;if " .. rc .. "==1 then Stk[" .. ra .. "](unpack(Stk," .. ra .. "+1," .. ra .. "+n)) elseif " .. rc .. "==2 then Stk[" .. ra .. "]=Stk[" .. ra .. "](unpack(Stk," .. ra .. "+1," .. ra .. "+n)) elseif " .. rc .. "==3 then Stk[" .. ra .. "],Stk[" .. ra .. "+1]=Stk[" .. ra .. "](unpack(Stk," .. ra .. "+1," .. ra .. "+n)) elseif " .. rc .. "==4 then Stk[" .. ra .. "],Stk[" .. ra .. "+1],Stk[" .. ra .. "+2]=Stk[" .. ra .. "](unpack(Stk," .. ra .. "+1," .. ra .. "+n)) elseif " .. rc .. "==0 then local rets={Stk[" .. ra .. "](unpack(Stk," .. ra .. "+1," .. ra .. "+n))};for i=1,#rets do Stk[" .. ra .. "+i-1]=rets[i] end;Top=" .. ra .. "+#rets-1 else local rets={Stk[" .. ra .. "](unpack(Stk," .. ra .. "+1," .. ra .. "+n))};for i=1," .. rc .. "-1 do Stk[" .. ra .. "+i-1]=rets[i] end end",
+        [Op.TAILCALL] = "local n=0;if " .. rb .. ">1 then n=" .. rb .. "-1 else n=Top-" .. ra .. " end;return Stk[" .. ra .. "](unpack(Stk," .. ra .. "+1," .. ra .. "+n))",
+        [Op.RETURN]   = "if " .. rb .. "==1 then return elseif " .. rb .. "==0 then return unpack(Stk," .. ra .. ",Top) else return unpack(Stk," .. ra .. "," .. ra .. "+" .. rb .. "-2) end",
+        [Op.FORLOOP]  = "Stk[" .. ra .. "]=Stk[" .. ra .. "]+Stk[" .. ra .. "+2];if Stk[" .. ra .. "+2]>0 then if Stk[" .. ra .. "]<=Stk[" .. ra .. "+1] then IP=IP+" .. rb .. ";Stk[" .. ra .. "+3]=Stk[" .. ra .. "] end else if Stk[" .. ra .. "]>=Stk[" .. ra .. "+1] then IP=IP+" .. rb .. ";Stk[" .. ra .. "+3]=Stk[" .. ra .. "] end end",
+        [Op.FORPREP]  = "Stk[" .. ra .. "]=Stk[" .. ra .. "]-Stk[" .. ra .. "+2];IP=IP+" .. rb,
+        [Op.TFORLOOP] = "if " .. rc .. "==2 then local k,v=Stk[" .. ra .. "](Stk[" .. ra .. "+1],Stk[" .. ra .. "+2]);Stk[" .. ra .. "+3]=k;Stk[" .. ra .. "+4]=v;if k~=nil then Stk[" .. ra .. "+2]=k;IP=IP+1 end elseif " .. rc .. "==1 then local k=Stk[" .. ra .. "](Stk[" .. ra .. "+1],Stk[" .. ra .. "+2]);Stk[" .. ra .. "+3]=k;if k~=nil then Stk[" .. ra .. "+2]=k;IP=IP+1 end else local rets={Stk[" .. ra .. "](Stk[" .. ra .. "+1],Stk[" .. ra .. "+2])};for i=1," .. rc .. " do Stk[" .. ra .. "+2+i]=rets[i] end;if Stk[" .. ra .. "+3]~=nil then Stk[" .. ra .. "+2]=Stk[" .. ra .. "+3];IP=IP+1 end end",
+        [Op.SETLIST]  = "local offset=(" .. rc .. "-1)*50;for i=1," .. rb .. " do Stk[" .. ra .. "][offset+i]=Stk[" .. ra .. "+i] end",
+        [Op.CLOSURE]  = "Stk[" .. ra .. "]=Wrap(Protos[" .. rb .. "+1],Env,Stk,Upvals)",
+        [Op.VARARG]   = "if " .. rb .. "==0 then for i=0,#Vararg do Stk[" .. ra .. "+i]=Vararg[i] end;Top=" .. ra .. "+#Vararg else for i=1," .. rb .. "-1 do Stk[" .. ra .. "+i-1]=Vararg[i-1] end end",
         [Op.FLOORDIV] = "Stk[" .. ra .. "]=math.floor(Stk[" .. rb .. "]/Stk[" .. rc .. "])",
     }
 
     return templates[op] or ("--unknown op " .. tostring(op))
 end
 
--- Generate binary search dispatch
+-- Generate binary search dispatch (legacy)
 function Emitter:generateDispatch(handlers)
     local ids = {}
     for id in pairs(handlers) do
@@ -254,6 +254,24 @@ function Emitter:generateDispatch(handlers)
     return buildTree(1, #ids)
 end
 
+-- Generate table-based dispatch (fast, O(1) lookup)
+function Emitter:generateTableDispatch(handlers)
+    local parts = {}
+    parts[#parts + 1] = "local D={}"
+
+    local ids = {}
+    for id in pairs(handlers) do ids[#ids + 1] = id end
+    table.sort(ids)
+
+    for _, id in ipairs(ids) do
+        local h = handlers[id]
+        parts[#parts + 1] = "D[" .. id .. "]=function() " .. h .. " end"
+    end
+
+    parts[#parts + 1] = "while true do D[Code[IP]]() IP=IP+4 end"
+    return table.concat(parts, "\n")
+end
+
 -- Generate complete VM code
 function Emitter:generateVM(bytecodeStr, handlers, opcodeMap, chunk)
     local parts = {}
@@ -272,8 +290,8 @@ function Emitter:generateVM(bytecodeStr, handlers, opcodeMap, chunk)
     parts[#parts + 1] = "local Select=select"
     parts[#parts + 1] = "local unpack=unpack or table.unpack"
 
-    -- XOR function
-    parts[#parts + 1] = [[local function BitXOR(a,b) local p,c=1,0 while a>0 and b>0 do local ra,rb=a%2,b%2 if ra~=rb then c=c+p end a,b,p=(a-ra)/2,(b-rb)/2,p*2 end if a<b then a=b end while a>0 do local ra=a%2 if ra>0 then c=c+p end a,p=(a-ra)/2,p*2 end return c end]]
+    -- XOR function (uses bit32 if available for speed, fallback to pure Lua)
+    parts[#parts + 1] = [[local BitXOR=(bit32 and bit32.bxor) or (bit and bit.bxor) or function(a,b) local p,c=1,0 while a>0 and b>0 do local ra,rb=a%2,b%2 if ra~=rb then c=c+p end a,b,p=(a-ra)/2,(b-rb)/2,p*2 end if a<b then a=b end while a>0 do local ra=a%2 if ra>0 then c=c+p end a,p=(a-ra)/2,p*2 end return c end]]
 
     -- LZW decompress
     parts[#parts + 1] = [[local function Decompress(b) local c,d,e="","",{} local f=256 local g={} for h=0,f-1 do g[h]=Char(h) end local i=1 local function k() local l=tonumber(Sub(b,i,i),36) i=i+1 local m=tonumber(Sub(b,i,i+l-1),36) i=i+l return m end c=Char(k()) e[1]=c while i<#b do local n=k() if g[n] then d=g[n] else d=c..Sub(c,1,1) end g[f]=c..Sub(d,1,1) e[#e+1],c,f=d,d,f+1 end return Concat(e) end]]
@@ -302,7 +320,7 @@ local UpCount=gBits32() local UpDefs=nil
 if UpCount>0 then UpDefs={} for i=1,UpCount do local t=gBits8() local r=gBits16() UpDefs[i]={t,r} end end
 return {Instrs,Protos,Params,Consts,UpDefs} end]]
 
-    -- VM Wrap function
+    -- VM Wrap function with pre-extracted locals
     local dispatch = self:generateDispatch(handlers)
 
     parts[#parts + 1] = [=[local function Wrap(Chunk,Env,PStk,PUpvals)
@@ -315,7 +333,8 @@ local PCount=Select('#',...)-1
 for i=0,PCount do if i>=Params then Vararg[i-Params]=Args[i+1] else Stk[i]=Args[i+1] end end
 local IP=1 local Protos=Proto
 while true do
-local Inst=Instr[IP] local Enum=Inst[1]
+local Inst=Instr[IP]
+local Enum,A,B,C=Inst[1],Inst[2],Inst[3],Inst[4]
 ]=] .. dispatch .. [=[
 
 IP=IP+1
