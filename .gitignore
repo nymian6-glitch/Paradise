@@ -1,0 +1,4 @@
+*.so
+*.o
+*.obfuscated.lua
+*.out
